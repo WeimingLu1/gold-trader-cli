@@ -18,25 +18,13 @@
 
 ---
 
-## 已接入的真实数据
-
-| 数据 | API | 来源 |
-|---|---|---|
-| 黄金价格（XAUUSD） | GoldAPI.io | 实时报价 |
-| 美债收益率（2y/5y/10y/30y） | FRED | 美国财政部 |
-| 实际利率（TIPS） | FRED | TIPS 市场 |
-| 新闻事件 | NewsAPI.org | 全球财经新闻 |
-| LLM 分析 | MiniMax M2.7 | MiniMax 平台 |
-
----
-
 ## 快速开始
 
 ```bash
 # 进入项目目录
 cd gold-trader-cli
 
-# 激活虚拟环境（如已激活可跳过）
+# 激活虚拟环境
 source .venv/bin/activate
 
 # 初始化数据库（首次使用）
@@ -45,10 +33,10 @@ gold-cli init-db
 # 检查系统配置和 API 连通状态
 gold-cli doctor
 
-# 运行一次完整分析
+# 运行一次完整分析（即时查看当前市场建议）
 gold-cli run-once
 
-# 启动定时调度（每 4 小时自动运行一次）
+# 启动定时调度器（每 4 小时自动运行一次）
 gold-cli schedule-start
 ```
 
@@ -76,6 +64,174 @@ cp .env.example .env
 
 ---
 
+## 完整运行流程
+
+```
+定时触发（schedule-start）或手动触发（run-once）
+       │
+   第1步: 数据采集
+   ├─ GoldAPI    → XAUUSD 实时价格（买价/卖价/点差）
+   ├─ FRED       → 美债收益率（2y/5y/10y/30y）+ TIPS 实际利率
+   ├─ NewsAPI    → 相关财经新闻标题
+   └─ 宏观日历   → FOMC、CPI 等重要事件及距开启时间
+       │
+   第2步: 特征工程
+   ├─ 计算 1h/4h/12h/24h 收益率
+   ├─ 量化 6 个因子：美元指数、实际利率、COT持仓、波动率、技术面、新闻情绪
+   ├─ 综合评分（-1.0 强烈看空 ~ +1.0 强烈看多）
+   └─ 判断：波动率环境（低/正常/高）、趋势状态、风险状态、事件窗口
+       │
+   第3步: 保存快照到 SQLite
+   （记录带 available_time，防止 look-ahead bias）
+       │
+   第4步: LLM 市场分析师（MiniMax M2.7）
+   输入：结构化特征
+   输出：方向（bullish/bearish/neutral）
+        置信度（0.0~1.0）
+        主要驱动因素 + 反向驱动因素
+        完整叙事分析
+        关键事件
+       │
+   第5步: 规则引擎 + LLM 规划器
+   ├─ 规则引擎：综合评分 → 立场（long / short / neutral）
+   │   · ±0.25 阈值，低置信度强制中立
+   │   · 高波动/事件窗口/数据不完整 → 强制中立
+   ├─ 风险引擎：计算止损/止盈价格（ATR 模式化）
+   └─ LLM 规划器：用中文解释"为什么这个立场是合理的"
+       │
+   数据写入数据库，完成
+       │
+   ─── 预测窗口到期后（如4小时后）───────────────────
+       │
+   evaluate-pending：拉取真实价格，对比预测与实际
+   ├─ 方向准确率（预测与实际方向是否一致）
+   ├─ 止损触发率
+   ├─ 止盈触发率
+   └─ 实际收益率
+       │
+   report-daily：按日统计
+   report-weekly：按周统计（支持按因子/置信度分组）
+```
+
+---
+
+## 场景化使用指南
+
+### 场景一：立即查看当前市场分析
+
+```bash
+gold-cli run-once
+```
+
+一次完整运行：采集 → 特征 → LLM分析 → 生成计划 → 打印详细输出（约30秒）。
+
+**输出包含：**
+- XAU 价格详情（买价/卖价/点差）
+- 美债收益率（2y/5y/10y/30y）
+- 宏观事件（FOMC/CPI）及距开启时间
+- 前5条相关新闻标题
+- 各周期收益率（1h/4h/12h/24h）
+- 6个因子量化评分（含权重和贡献）
+- 综合评分可视化条
+- LLM 完整叙事分析
+- 主要/反向驱动因素、关键事件
+- 入场/止损/止盈/失效规则
+- 策略解释和预期收益
+
+---
+
+### 场景二：启动自动定时交易指导
+
+```bash
+gold-cli schedule-start
+```
+
+每4小时（可配置）自动跑一次，所有结果存入数据库。适合开机后持续运行。
+
+---
+
+### 场景三：查看历史预测表现
+
+```bash
+# 评估所有预测窗口已到期的快照
+gold-cli evaluate-pending
+
+# 查看日报（默认今天）
+gold-cli report-daily
+
+# 查看指定日期日报
+gold-cli report-daily 2026-04-01
+
+# 查看周报（默认本周）
+gold-cli report-weekly
+
+# 查看指定周周报
+gold-cli report-weekly 2026-03-23
+```
+
+> 注意：只有预测窗口已到期的快照才能被评估。如刚跑了一条4小时预测，需等4小时后才有数据可评估。
+
+---
+
+### 场景四：单独调试某个步骤
+
+```bash
+gold-cli collect        # 只采集数据，打印原始返回
+gold-cli snapshot       # 采集 + 构建特征快照
+gold-cli analyze        # 对当前数据运行 LLM 分析师
+gold-cli plan-generate  # 生成交易计划
+gold-cli plan-generate --snapshot-id 10  # 指定历史快照生成计划
+```
+
+---
+
+### 场景五：用历史数据重放分析
+
+```bash
+# 用 ID=10 的快照特征重新跑一遍分析
+gold-cli replay 10
+```
+
+用于对比不同提示词或策略版本的表现差异。
+
+---
+
+### 场景六：查看和调整策略权重
+
+```bash
+# 查看当前 6 因子的权重配置
+gold-cli weights-show
+
+# 修改 config/weights.yaml 后，下次 run-once 自动生效
+```
+
+---
+
+### 场景七：查看系统状态
+
+```bash
+gold-cli doctor          # 检查 API 连通性和配置
+gold-cli config-show    # 显示当前完整配置
+gold-cli prompts-list   # 预览当前提示词内容
+```
+
+---
+
+### 场景八：手动管理数据库
+
+```bash
+# 查看所有快照
+sqlite3 gold_trader.db "SELECT id, status, stance, confidence, created_at FROM snapshots ORDER BY id DESC;"
+
+# 查看评估结果
+sqlite3 gold_trader.db "SELECT * FROM evaluations;"
+
+# 删除测试数据（慎用）
+sqlite3 gold_trader.db "DELETE FROM snapshots WHERE id > 1;"
+```
+
+---
+
 ## CLI 命令一览
 
 | 命令 | 说明 |
@@ -84,50 +240,31 @@ cp .env.example .env
 | `doctor` | 检查系统配置和 API 连通状态 |
 | `config-show` | 显示当前完整配置 |
 | `collect` | 仅运行数据采集 |
-| `snapshot` | 创建特征快照（打印到控制台） |
+| `snapshot` | 采集数据并创建特征快照 |
 | `analyze` | 对当前数据运行 LLM 分析师 |
 | `plan-generate` | 生成交易指导计划 |
 | `run-once` | **核心命令**：运行完整 pipeline 一次 |
 | `schedule-start` | 启动定时调度器 |
-| `evaluate-pending` | 评估已成熟的预测 |
-| `report-daily` | 生成日报 |
-| `report-weekly` | 生成周报 |
+| `evaluate-pending` | 评估所有窗口已到期的预测 |
+| `report-daily [日期]` | 生成日报 |
+| `report-weekly [周起始]` | 生成周报 |
 | `weights-show` | 显示当前策略权重 |
 | `prompts-list` | 预览当前提示词 |
 | `replay <id>` | 用历史快照重放分析 |
 
 ---
 
-## 工作流程
+## 已接入的真实数据
 
-```
-第 1 步：数据采集
-   → GoldAPI.io    实时黄金价格
-   → FRED          真实债券收益率、实际利率
-   → NewsAPI       财经新闻标题
+| 数据 | API | 来源 |
+|---|---|---|
+| 黄金价格（XAUUSD） | GoldAPI.io | 实时报价 |
+| 美债收益率（2y/5y/10y/30y） | FRED | 美国财政部 |
+| 实际利率（TIPS） | FRED | TIPS 市场 |
+| 新闻事件 | NewsAPI.org | 全球财经新闻 |
+| LLM 分析 | MiniMax M2.7 | MiniMax 平台 |
 
-第 2 步：特征工程
-   → 计算收益率（1h/4h/12h/24h）
-   → 波动率、趋势状态
-   → 宏观因子（美元、实际利率、收益率曲线）
-   → 新闻情绪、事件强度
-   → 市场状态（高波动/低波动、风险偏好、事件窗口）
-
-第 3 步：保存快照
-   → 写入 SQLite，关联 prompt / model / strategy 版本
-
-第 4 步：LLM 市场分析（MiniMax M2.7）
-   → 输入结构化特征 → 输出方向（看多/看空/中立）
-   → 置信度 + 主要驱动因素 + 叙事
-
-第 5 步：生成交易计划
-   → 规则引擎确定立场（long / short / neutral）
-   → LLM 提供叙事解释
-   → 输出止损 / 止盈 / 风控建议
-   → 写入数据库
-```
-
-**定时模式（`schedule-start`）**：每 4 小时自动跑一次，积累数据后用 `evaluate-pending` 评估预测准确率，用 `report-daily` / `report-weekly` 查看表现报表。
+> COT 持仓数据采集器已实现（CFTC，周更新），待接入。
 
 ---
 
@@ -146,7 +283,7 @@ cli/            → 命令行界面（Typer）
 
 **核心设计原则：**
 - 所有 LLM 输出使用结构化 JSON Schema
-- 规则先于 LLM 做决策 — 模型负责研究归纳，规则负责交易决策
+- **规则先于 LLM 做决策** — 模型负责研究归纳，规则负责交易决策
 - 每次建议都记录版本（模型版本、提示词版本、策略版本）
 - 所有数据标注 `available_time`，防止 look-ahead bias
 - 采集层全部可 mock，方便开发和回测
@@ -162,37 +299,6 @@ cli/            → 命令行界面（Typer）
 - **model_versions** — LLM 模型版本记录
 - **prompt_versions** — 提示词版本记录
 - **strategy_versions** — 策略权重配置版本
-
-查看数据：
-```bash
-sqlite3 gold_trader.db ".schema"
-sqlite3 gold_trader.db "SELECT id, status, xau_price, created_at FROM snapshots ORDER BY id DESC LIMIT 10;"
-```
-
----
-
-## 当前数据源配置
-
-| 数据 | API | 注册地址 | 免费额度 |
-|---|---|---|---|
-| 黄金价格 | GoldAPI.io | goldapi.io | 100 请求/月 |
-| 债券收益率 / TIPS | FRED | fred.stlouisfed.org | 免费 |
-| 新闻 | NewsAPI.org | newsapi.org | 100 请求/天 |
-| LLM | MiniMax M2.7 | platform.minimaxi.com | 按用量计费 |
-| COT 持仓 | CFTC | cftc.gov | 免费（周更新） |
-
----
-
-## 未来扩展方向
-
-- [ ] COT 持仓数据接入（CFTC，免费）
-- [ ] 回测引擎（基于历史数据）
-- [ ] 多时间周期分析（15m、1h、4h、日线）
-- [ ] 多品种支持（白银、矿业股、外汇）
-- [ ] 告警通知（Slack、邮件）
-- [ ] Web 控制台
-- [ ] 多 Agent 架构（宏观分析师、技术分析师、情绪分析师）
-- [ ] 策略 A/B 测试与集成学习
 
 ---
 
@@ -255,9 +361,22 @@ gold-trader-cli/
 │      └─ time_utils.py      # 时间工具
 ├─ tests/                    # 测试套件
 ├─ config/
-│   └─ weights.yaml          # 默认策略权重
+│  └─ weights.yaml          # 默认策略权重
 ├─ logs/                     # 日志文件（运行时创建）
 ├─ pyproject.toml
 ├─ .env.example
 └─ README.md
 ```
+
+---
+
+## 未来扩展方向
+
+- [ ] COT 持仓数据接入（CFTC，周更新）
+- [ ] 回测引擎（基于历史数据）
+- [ ] 多时间周期分析（15m、1h、4h、日线）
+- [ ] 多品种支持（白银、矿业股、外汇）
+- [ ] 告警通知（Slack、邮件）
+- [ ] Web 控制台
+- [ ] 多 Agent 架构（宏观分析师、技术分析师、情绪分析师）
+- [ ] 策略 A/B 测试与集成学习
