@@ -1,6 +1,6 @@
 """APScheduler-based scheduler for the main pipeline."""
 from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.triggers import interval
+from apscheduler.triggers.interval import IntervalTrigger
 from loguru import logger
 
 _pipeline_run_fn = None
@@ -34,7 +34,7 @@ def build_scheduler(interval_hours: int = 4) -> BlockingScheduler:
 
     scheduler.add_job(
         _run,
-        trigger=interval(hours=interval_hours),
+        trigger=IntervalTrigger(hours=interval_hours),
         id="gold_trader_pipeline",
         name="Gold Trader Main Pipeline",
         replace_existing=True,
