@@ -1,9 +1,10 @@
 # Default Strategy Weights
 # Sum of all weights must equal 1.0
 
-usd_factor: 0.20
-real_rate_factor: 0.20
-positioning_factor: 0.15
-volatility_factor: 0.15
-technical_factor: 0.20
-news_factor: 0.10
+usd_factor: 0.222
+real_rate_factor: 0.222
+positioning_factor: 0.167
+volatility_factor: 0.167
+technical_factor: 0.222
+news_factor: 0.000
+# Note: news_factor set to 0 because news_sentiment_score is always 0.0 in this version

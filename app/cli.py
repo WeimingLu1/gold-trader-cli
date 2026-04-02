@@ -326,9 +326,11 @@ def _print_factor_scores(features: FeatureSnapshot, scorer: "Scorer") -> None:
     for key, label in factor_labels.items():
         weight = getattr(weights, f"{key}_factor", 0)
         fs_val = factor_scores.get(key, 0)
-        contribution = fs_val * weight
-        bar = "█" * int((fs_val + 1) * 5) if fs_val != 0 else "░" * 5
-        score_table.add_row(label, f"{weight:.0%}", f"{fs_val:+.3f} {bar}", f"{contribution:+.3f}")
+        # Clamp to [-1, 1] to show what actually contributes to composite
+        fs_val_clamped = max(-1.0, min(1.0, fs_val))
+        contribution = fs_val_clamped * weight
+        bar = "█" * int((fs_val_clamped + 1) * 5) if fs_val_clamped != 0 else "░" * 5
+        score_table.add_row(label, f"{weight:.1%}", f"{fs_val_clamped:+.3f} {bar}", f"{contribution:+.3f}")
 
     console.print(score_table)
 
