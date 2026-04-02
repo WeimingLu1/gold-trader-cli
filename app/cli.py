@@ -644,11 +644,28 @@ def evaluate_pending(
     console.print(f"[cyan]正在评估 {len(matured)} 个快照...[/cyan]")
     evaluator = Evaluator()
 
+    async def _get_current_price():
+        collector = XAUUSDCollector()
+        data = await collector.collect()
+        return data[0].normalized_payload["price"]
+
+    current_price = asyncio.run(_get_current_price())
+    console.print(f"[dim]当前 XAU 价格: ${current_price}[/dim]")
+
     for snap in matured:
         try:
-            current_price = snap.xau_price * 1.002  # TODO: 替换为真实价格
             eval_result = evaluator.evaluate(snap, current_price)
-            eval_repo.create(snap.id, **eval_result.model_dump())
+            eval_repo.create(snap.id, **{
+                "xau_price_at_horizon": eval_result.xau_price_at_horizon,
+                "direction_actual": eval_result.direction_actual,
+                "direction_hit": eval_result.direction_hit,
+                "stop_hit": eval_result.stop_hit,
+                "expected_return": eval_result.expected_return,
+                "actual_return": eval_result.actual_return,
+                "prompt_version": eval_result.prompt_version,
+                "model_version": eval_result.model_version,
+                "strategy_version": eval_result.strategy_version,
+            })
             snap_repo.mark_evaluated(snap.id)
             console.print(
                 f"  [green]✓[/green] 快照 {snap.id}: "
