@@ -27,6 +27,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+from rich.progress import track
 
 from app.config import get_settings
 from app.logging import setup_logging
@@ -170,9 +171,226 @@ def _build_snapshot(collected: dict, horizon_hours: int = 4) -> FeatureSnapshot:
     )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 详细展示辅助函数
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _print_collected_summary(collected: dict) -> None:
+    """打印采集到的原始数据总览。"""
+    console.print("\n[bold cyan]数据总览[/bold cyan]")
+
+    # XAU 价格详情
+    xau_data = collected.get("xauusd", [])
+    if xau_data and xau_data[0].normalized_payload:
+        p = xau_data[0].normalized_payload
+        console.print(f"  黄金价格: [bold]${p.get('price', 'N/A'):.2f}[/bold]  |  买价 ${p.get('bid', 'N/A'):.2f}  |  卖价 ${p.get('ask', 'N/A'):.2f}  |  差价 ${p.get('spread', 'N/A'):.2f}")
+
+    # 债券收益率
+    yields_data = collected.get("treasury_yields", [])
+    if yields_data:
+        yield_table = Table(title="美债收益率", show_header=True, header_style="bold cyan")
+        yield_table.add_column("期限", style="white")
+        yield_table.add_column("收益率", justify="right", style="yellow")
+        for item in yields_data:
+            if item.normalized_payload:
+                label = {"DGS2": "2年期", "DGS5": "5年期", "DGS10": "10年期", "DGS30": "30年期"}.get(item.symbol or "", item.symbol or "")
+                yield_table.add_row(label, f"{item.normalized_payload.get('yield_pct', 0):.3f}%")
+        console.print(yield_table)
+
+    # 宏观日历事件
+    events_data = collected.get("macro_calendar", [])
+    if events_data:
+        event_table = Table(title="宏观事件", show_header=True, header_style="bold cyan")
+        event_table.add_column("事件", style="white")
+        event_table.add_column("影响", style="yellow")
+        event_table.add_column("距今", style="white")
+        for item in events_data:
+            if item.normalized_payload:
+                np = item.normalized_payload
+                hours = np.get("hours_until_event", 0)
+                impact = {"high": "🔴 高", "medium": "🟡 中", "low": "🟢 低"}.get(np.get("impact", ""), np.get("impact", ""))
+                if hours < 1:
+                    time_str = f"{hours*60:.0f} 分钟"
+                elif hours < 24:
+                    time_str = f"{hours:.1f} 小时"
+                else:
+                    time_str = f"{hours/24:.1f} 天"
+                event_table.add_row(np.get("event", ""), impact, time_str)
+        console.print(event_table)
+
+    # COT 持仓
+    pos_data = collected.get("positioning", [])
+    if pos_data and pos_data[0].raw_payload:
+        rp = pos_data[0].raw_payload
+        console.print(
+            f"  COT 持仓: 非商业净多头 [bold]{rp.get('net_noncommercial_positions', 0):+,}[/bold] 手"
+            f"  |  多空比 [bold]{rp.get('funds_long_short_ratio', 0):.2f}[/bold]"
+        )
+
+    # ETF 流量
+    etf_data = collected.get("etf_flows", [])
+    if etf_data:
+        flow_lines = []
+        for item in etf_data:
+            if item.raw_payload:
+                ticker = item.symbol or "?"
+                data = item.raw_payload.get(ticker, {})
+                flow = data.get("flow_24h", 0)
+                direction = "流入 ↑" if flow > 0 else "流出 ↓" if flow < 0 else "持平"
+                flow_lines.append(f"{ticker}: {flow:+,.0f} oz {direction}")
+        if flow_lines:
+            console.print(f"  ETF 流量: {'  |  '.join(flow_lines)}")
+
+    # 新闻标题
+    news_data = collected.get("news", [])
+    if news_data:
+        news_table = Table(title="相关新闻标题（前5条）", show_header=True, header_style="bold cyan")
+        news_table.add_column("来源", style="cyan", width=12)
+        news_table.add_column("标题", style="white")
+        for item in news_data[:5]:
+            if item.normalized_payload:
+                headline = item.normalized_payload.get("headline", "")[:80]
+                source = item.source or ""
+                gold_driver = " 🟢" if item.normalized_payload.get("is_gold_key_driver") else ""
+                news_table.add_row(source + gold_driver, headline)
+        console.print(news_table)
+
+
+def _print_features_detail(features: FeatureSnapshot) -> None:
+    """打印完整特征详情。"""
+    console.print("\n[bold cyan]特征快照详情[/bold cyan]")
+
+    # 收益率
+    returns_table = Table(title="收益率", show_header=True, header_style="bold cyan")
+    returns_table.add_column("周期", style="white")
+    returns_table.add_column("涨跌幅", justify="right", style="yellow")
+    for label, val in [
+        ("1小时", features.returns_1h),
+        ("4小时", features.returns_4h),
+        ("12小时", features.returns_12h),
+        ("24小时", features.returns_24h),
+    ]:
+        arrow = "↑" if val > 0 else "↓" if val < 0 else "→"
+        returns_table.add_row(label, f"{arrow} {val:+.3%}")
+    console.print(returns_table)
+
+    # 宏观 & 持仓因子
+    factor_table = Table(title="量化因子", show_header=True, header_style="bold cyan")
+    factor_table.add_column("因子", style="white")
+    factor_table.add_column("数值", justify="right", style="yellow")
+    factor_table.add_row("美元指数变化", f"{features.dxy_change:+.3%}")
+    factor_table.add_row("10年期国债收益率变化", f"{features.yield_10y_change:+.2f} bp")
+    factor_table.add_row("实际利率代理", f"{features.real_rate_proxy:+.3f}%")
+    factor_table.add_row("收益率曲线斜率(10y-2y)", f"{features.yield_curve_slope:+.2f}")
+    factor_table.add_row("新闻情绪评分", f"{features.news_sentiment_score:+.2f}（-1~+1）")
+    factor_table.add_row("COT净持仓", f"{features.cot_net_positions:+,.0f} 手")
+    factor_table.add_row("ETF 24h净流入", f"{features.etf_flow_24h:+,.0f} oz")
+    factor_table.add_row("数据完整度", f"{features.data_completeness:.0%}")
+    console.print(factor_table)
+
+    console.print(
+        f"  趋势: [bold]{features.trend_state}[/bold]  |  "
+        f"波动率环境: [bold]{features.volatility_regime}[/bold]  |  "
+        f"风险状态: [bold]{features.risk_state}[/bold]  |  "
+        f"事件窗口: {'[red]是[/red]' if features.event_window else '否'}  |  "
+        f"数据置信度: {features.confidence_score:.2f}"
+    )
+
+
+def _print_factor_scores(features: FeatureSnapshot, scorer: "Scorer") -> None:
+    """打印综合评分和因子评分表。"""
+    composite_score, factor_scores = scorer.score(features)
+
+    console.print("\n[bold cyan]量化评分[/bold cyan]")
+    console.print(f"  综合评分: [bold]{composite_score:+.3f}[/bold]（-1.0=强烈看空 ~ +1.0=强烈看多）")
+
+    score_bar = "█" * int((composite_score + 1) * 10) + "░" * int((1 - composite_score) * 10)
+    console.print(f"  评分条: [{score_bar}]")
+
+    score_table = Table(title="因子评分明细", show_header=True, header_style="bold cyan")
+    score_table.add_column("因子", style="white")
+    score_table.add_column("权重", justify="right", style="cyan")
+    score_table.add_column("分项得分", justify="right", style="yellow")
+    score_table.add_column("贡献", justify="right", style="white")
+
+    factor_labels = {
+        "usd": "美元指数",
+        "real_rate": "实际利率",
+        "positioning": "COT持仓",
+        "volatility": "波动率",
+        "technical": "技术面",
+        "news": "新闻情绪",
+    }
+    weights = scorer.weights
+
+    for key, label in factor_labels.items():
+        weight = getattr(weights, f"{key}_factor", 0)
+        fs_val = factor_scores.get(key, 0)
+        contribution = fs_val * weight
+        bar = "█" * int((fs_val + 1) * 5) if fs_val != 0 else "░" * 5
+        score_table.add_row(label, f"{weight:.0%}", f"{fs_val:+.3f} {bar}", f"{contribution:+.3f}")
+
+    console.print(score_table)
+
+
+def _print_analyst_detail(analyst_output: "AnalystOutput") -> None:
+    """打印完整分析师输出。"""
+    console.print("\n[bold cyan]LLM 分析师输出[/bold cyan]")
+
+    direction_color = {"bullish": "green", "bearish": "red", "neutral": "yellow"}.get(analyst_output.direction, "white")
+    console.print(f"  方向: [{direction_color}][bold]{analyst_output.direction.upper()}[/bold]")
+    console.print(f"  置信度: {analyst_output.confidence:.2f}")
+    console.print(f"\n  [bold]叙事分析:[/bold]\n  {analyst_output.narrative}")
+
+    if analyst_output.primary_drivers:
+        drivers_table = Table(title="主要驱动因素", show_header=False)
+        drivers_table.add_column("→", style="green", width=2)
+        drivers_table.add_column("", style="white")
+        for d in analyst_output.primary_drivers:
+            drivers_table.add_row("→", d)
+        console.print(drivers_table)
+
+    if analyst_output.counter_drivers:
+        ctable = Table(title="反向驱动因素", show_header=False)
+        ctable.add_column("←", style="red", width=2)
+        ctable.add_column("", style="white")
+        for d in analyst_output.counter_drivers:
+            ctable.add_row("←", d)
+        console.print(ctable)
+
+    if analyst_output.key_events:
+        console.print(f"  [bold]关键事件:[/bold] {', '.join(analyst_output.key_events)}")
+
+
+def _print_plan_detail(trade_plan: "TradePlan") -> None:
+    """打印完整交易计划。"""
+    console.print("\n[bold cyan]交易计划[/bold cyan]")
+
+    stance_color = {"long": "green", "short": "red", "neutral": "yellow"}.get(trade_plan.stance, "white")
+    console.print(f"  立场: [{stance_color}][bold]{trade_plan.stance.upper()}[/bold]")
+    console.print(f"  置信度: {trade_plan.confidence:.2f}")
+    console.print(f"  预测窗口: {trade_plan.horizon_hours} 小时")
+    console.print(f"  预期收益: {trade_plan.expected_return_pct:+.3f}%")
+    console.print(f"\n  [bold]入场规则:[/bold] {trade_plan.entry_rule}")
+    console.print(f"  [bold]止损规则:[/bold] {trade_plan.stop_rule}")
+    console.print(f"  [bold]止盈规则:[/bold] {trade_plan.take_profit_rule}")
+    console.print(f"  [bold]失效条件:[/bold] {trade_plan.invalidation_rule}")
+    console.print(f"  [bold]风控提示:[/bold] {trade_plan.risk_note}")
+    if trade_plan.why:
+        console.print(f"\n  [bold]策略解释:[/bold] {trade_plan.why}")
+
+    console.print(
+        f"\n  版本: 模型={trade_plan.model_version}  |  "
+        f"提示词={trade_plan.prompt_version}  |  "
+        f"策略={trade_plan.strategy_version}"
+    )
+
+
 def _run_pipeline() -> int:
     """执行完整分析 pipeline，返回创建的 snapshot ID。"""
     from app.llm import build_provider, Analyst, Planner
+    from app.strategy import Scorer
+    from app.llm.schemas import AnalystOutput
 
     settings = get_settings()
     horizon = settings.default_horizon_hours
@@ -182,15 +400,14 @@ def _run_pipeline() -> int:
     # 第1步：数据采集
     console.print("\n[bold cyan]第 1 步：数据采集[/bold cyan]")
     collected = asyncio.run(_collect_all())
+    _print_collected_summary(collected)
 
     # 第2步：构建特征
     console.print("\n[bold cyan]第 2 步：特征工程[/bold cyan]")
     features = _build_snapshot(collected, horizon)
     console.print(f"  快照时间: {features.snapshot_at}")
     console.print(f"  XAU 价格: ${features.xau_price:.2f}")
-    console.print(f"  趋势状态: {features.trend_state}")
-    console.print(f"  波动率环境: {features.volatility_regime}")
-    console.print(f"  数据完整度: {features.data_completeness:.0%}")
+    _print_features_detail(features)
 
     # 第3步：保存快照
     console.print("\n[bold cyan]第 3 步：保存快照[/bold cyan]")
@@ -208,15 +425,24 @@ def _run_pipeline() -> int:
     console.print("\n[bold cyan]第 4 步：LLM 市场分析[/bold cyan]")
     provider = build_provider()
     analyst = Analyst(provider)
+    scorer = Scorer(DEFAULT_WEIGHTS)
+    _print_factor_scores(features, scorer)
 
     try:
         analyst_output = asyncio.run(analyst.analyze(features))
-        console.print(f"  方向倾向: [bold]{analyst_output.direction}[/bold]")
-        console.print(f"  置信度: {analyst_output.confidence:.2f}")
-        console.print(f"  叙事: {analyst_output.narrative[:100]}...")
+        _print_analyst_detail(analyst_output)
         repo.update_analyst_output(snap.id, analyst_output.to_dict())
     except Exception as e:
         console.print(f"  [yellow]分析师运行失败（使用 fallback）: {e}[/yellow]")
+        analyst_output = AnalystOutput(
+            generated_at=datetime.utcnow(),
+            direction="neutral",
+            confidence=0.5,
+            primary_drivers=[],
+            counter_drivers=[],
+            narrative="（分析师调用失败）",
+            key_events=[],
+        )
         repo.update_analyst_output(snap.id, {"direction": "neutral", "confidence": 0.5})
 
     # 第5步：生成交易计划
@@ -225,7 +451,6 @@ def _run_pipeline() -> int:
 
     try:
         analyst_out = repo.get_by_id(snap.id).analyst_output_json
-        from app.llm.schemas import AnalystOutput
         mock_analyst_out = AnalystOutput(
             generated_at=datetime.utcnow(),
             direction=analyst_out.get("direction", "neutral"),
@@ -235,16 +460,9 @@ def _run_pipeline() -> int:
             narrative=analyst_out.get("narrative", ""),
             key_events=analyst_out.get("key_events", []),
         )
-        from app.strategy import Scorer
-        scorer = Scorer(DEFAULT_WEIGHTS)
-        composite_score, _ = scorer.score(features)
 
         trade_plan = asyncio.run(planner.plan(features, mock_analyst_out, snap.id, horizon))
-        console.print(f"  立场: [bold]{trade_plan.stance.upper()}[/bold]")
-        console.print(f"  置信度: {trade_plan.confidence:.2f}")
-        console.print(f"  止损: {trade_plan.stop_rule}")
-        console.print(f"  止盈: {trade_plan.take_profit_rule}")
-        console.print(f"  风险提示: {trade_plan.risk_note}")
+        _print_plan_detail(trade_plan)
         repo.update_trade_plan(snap.id, trade_plan.to_dict())
     except Exception as e:
         console.print(f"  [yellow]计划生成失败: {e}[/yellow]")
