@@ -122,11 +122,11 @@ class Planner:
         return response.parsed.get("justification", analyst.narrative)
 
     def _build_invalidation_rule(self, features: FeatureSnapshot, stance: str) -> str:
-        """Build the invalidation rule based on current regime."""
+        """构建失效规则（中文）。"""
         rules = []
         if features.event_window:
-            rules.append("High-impact event triggers unexpected vol spike.")
+            rules.append("重要宏观事件引发意外波动。")
         if features.volatility_regime == "high":
-            rules.append("Volatility regime shifts from high to extreme.")
-        rules.append(f"{features.xau_price * 0.99:.2f} breach on stop or TP hit.")
+            rules.append("波动率环境从高变为极端。")
+        rules.append(f"止损或止盈触发后价格继续朝不利方向移动。")
         return " ".join(rules)

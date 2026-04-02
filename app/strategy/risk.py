@@ -69,17 +69,17 @@ class RiskManager:
         return max(0.0, min(1.0, confidence))
 
     def generate_stop_rule(self, entry_price: float, stop_pct: float) -> str:
-        """Generate a human-readable stop-loss rule."""
+        """生成止损规则（中文）。"""
         stop_price = round(entry_price * (1 - stop_pct), 2)
-        return f"Exit if price falls below ${stop_price} (${stop_pct*100:.1f}% drawdown from entry)"
+        return f"若价格跌破 ${stop_price}，则止损出局（从入场价回落 {stop_pct*100:.1f}%）"
 
     def generate_tp_rule(self, entry_price: float, tp_pct: float, stance: str) -> str:
-        """Generate a human-readable take-profit rule."""
+        """生成止盈规则（中文）。"""
         if stance == "long":
             tp_price = round(entry_price * (1 + tp_pct), 2)
         elif stance == "short":
             tp_price = round(entry_price * (1 - tp_pct), 2)
         else:
-            return "No take-profit rule for neutral stance."
+            return "中立立场，不设止盈。"
 
-        return f"Exit if price reaches ${tp_price} (${tp_pct*100:.1f}% gain from entry)"
+        return f"若价格达到 ${tp_price}，则止盈出局（从入场价获利 {tp_pct*100:.1f}%）"

@@ -39,39 +39,37 @@ class RuleEngine:
 
     def apply_risk_rules(self, stance: str, features: FeatureSnapshot) -> tuple[str, str]:
         """
-        Apply risk guardrails and return (adjusted_stance, risk_note).
+        应用风控规则，返回（调整后立场，风控提示）。
 
-        Guardrails:
-        1. High volatility regime → reduce exposure (already in confidence)
-        2. Event window within 4h → neutral stance
-        3. Data completeness < 50% → neutral stance
-        4. Extreme positioning → note only (already in scorer)
+        规则：
+        1. 高波动环境 → 降低敞口
+        2. 重要事件窗口（4小时内）→ 中立
+        3. 数据完整度 < 50% → 中立
         """
         notes: list[str] = []
         adjusted = stance
 
-        # Guardrail 1: High volatility regime
+        # 规则1：高波动
         if features.volatility_regime == "high":
-            notes.append("High volatility regime — reduce size.")
+            notes.append("高波动环境 — 建议降低仓位。")
 
-        # Guardrail 2: Event window within 4 hours
+        # 规则2：重要事件窗口
         if features.event_window:
-            # Only override if event is imminent (< 4h)
-            notes.append("High-impact event imminent — caution warranted.")
+            notes.append("重要宏观事件临近 — 建议谨慎。")
             if adjusted != "neutral":
-                notes.append("Event window overrides directional stance.")
+                notes.append("事件窗口强制中立。")
 
-        # Guardrail 3: Incomplete data
+        # 规则3：数据不完整
         if features.data_completeness < 0.5:
-            notes.append(f"Incomplete data ({features.data_completeness:.0%}) — neutral forced.")
+            notes.append(f"数据不完整（{features.data_completeness:.0%}）— 强制中立。")
             adjusted = "neutral"
 
-        # Guardrail 4: High volatility overrides directional stance
+        # 规则4：高波动覆盖方向性立场
         if features.volatility_regime == "high" and adjusted != "neutral":
-            notes.append("High vol overrides directional stance.")
+            notes.append("高波动覆盖方向性立场。")
             adjusted = "neutral"
 
-        risk_note = " ".join(notes) if notes else "Normal operation — no risk flags."
+        risk_note = " ".join(notes) if notes else "正常状态 — 无风控警告。"
         return adjusted, risk_note
 
     def determine_expected_return(
