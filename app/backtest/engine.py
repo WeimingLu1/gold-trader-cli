@@ -38,13 +38,15 @@ class BacktestEngine:
     4. compute_metrics() → summary stats
     """
 
-    def __init__(self):
+    def __init__(self, initial_capital: float = 100_000.0, position_fraction: float = 0.10):
         self.gold = GoldHistoryStore()
         self.rates = RatesHistoryStore()
         self.news = NewsHistoryStore()
         self.scorer = Scorer(DEFAULT_WEIGHTS)
         self.rules = RuleEngine()
         self.risk = RiskManager()
+        self.initial_capital = initial_capital
+        self.position_fraction = position_fraction
         self.session = get_session_factory()()
         self._ensure_tables()
 
@@ -64,6 +66,8 @@ class BacktestEngine:
         end_date: date,
         interval_hours: int = 4,
         name: str = "default",
+        initial_capital: float = 100_000.0,
+        position_fraction: float = 0.10,
     ) -> dict:
         """
         Execute full backtest run.
@@ -101,15 +105,21 @@ class BacktestEngine:
         self.session.add_all(snapshots)
         self.session.commit()
 
-        # Phase 2: Evaluate matured snapshots
+        # Phase 2: Evaluate matured snapshots with compound equity tracking
         now = datetime.utcnow()
         evaluations = []
+        current_equity = initial_capital
         for snap in snapshots:
             if snap.as_of + timedelta(hours=snap.horizon_hours) > now:
                 continue  # not yet matured
-            eval_result = self._evaluate_snapshot(snap)
+            eval_result = self._evaluate_snapshot(
+                snap, current_equity, position_fraction
+            )
             if eval_result:
                 evaluations.append(eval_result)
+                # Compound equity after each directional trade
+                if eval_result.pnl_pct != 0:
+                    current_equity += current_equity * eval_result.pnl_pct / 100
 
         self.session.add_all(evaluations)
         run.status = "completed"
@@ -117,7 +127,7 @@ class BacktestEngine:
 
         # Compute metrics
         from app.backtest.metrics import compute_metrics
-        metrics = compute_metrics(snapshots, evaluations)
+        metrics = compute_metrics(snapshots, evaluations, initial_capital, position_fraction)
 
         return {
             "run_id": run.id,
@@ -335,7 +345,12 @@ class BacktestEngine:
             strategy_version="v1.0",
         )
 
-    def _evaluate_snapshot(self, snap: BacktestSnapshot) -> BacktestEvaluation | None:
+    def _evaluate_snapshot(
+        self,
+        snap: BacktestSnapshot,
+        current_equity: float,
+        position_fraction: float,
+    ) -> BacktestEvaluation | None:
         """Evaluate a matured backtest snapshot."""
         as_of = snap.as_of
         horizon_hours = snap.horizon_hours
@@ -406,8 +421,14 @@ class BacktestEngine:
         actual_return = round(price_change_pct * 100, 4)
         expected_return = plan.get("tp_pct", 0.010) * 100
 
-        # P&L
-        pnl_pct = actual_return if stance == "long" else (-actual_return if stance == "short" else 0.0)
+        # P&L: portfolio return % from this trade
+        # Position size = position_fraction of equity at time of trade
+        if stance == "neutral":
+            pnl_pct = 0.0
+        elif stance == "long":
+            pnl_pct = actual_return * position_fraction
+        else:  # short
+            pnl_pct = -actual_return * position_fraction
 
         return BacktestEvaluation(
             backtest_snapshot_id=snap.id,

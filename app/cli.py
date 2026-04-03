@@ -851,6 +851,8 @@ def backtest(
     end: str = typer.Option(..., help="回测结束日期，格式 YYYY-MM-DD"),
     interval: int = typer.Option(4, help="快照间隔（小时）"),
     name: str = typer.Option("default", help="回测名称"),
+    capital: float = typer.Option(100_000.0, help="初始资金（美元）"),
+    position_fraction: float = typer.Option(0.10, help="每笔交易占用资金比例"),
 ):
     """基于真实历史数据运行策略回测。
 
@@ -875,9 +877,10 @@ def backtest(
     console.print(Panel(f"[yellow]历史回测系统启动[/yellow]\n"
                         f"  区间: {start} ~ {end}\n"
                         f"  间隔: {interval} 小时\n"
-                        f"  名称: {name}"))
+                        f"  名称: {name}\n"
+                        f"  初始资金: ${capital:,.0f}  |  每笔仓位: {position_fraction:.0%}"))
 
-    engine = BacktestEngine()
+    engine = BacktestEngine(initial_capital=capital, position_fraction=position_fraction)
 
     # Warm cache
     console.print("\n[bold cyan]第 1 步：预加载历史数据...[/bold cyan]")
@@ -889,7 +892,13 @@ def backtest(
 
     # Run backtest
     console.print("\n[bold cyan]第 2 步：运行回测...[/bold cyan]")
-    result = engine.run(start_date, end_date, interval_hours=interval, name=name)
+    result = engine.run(
+        start_date, end_date,
+        interval_hours=interval,
+        name=name,
+        initial_capital=capital,
+        position_fraction=position_fraction,
+    )
     metrics = result["metrics"]
 
     console.print(
@@ -913,10 +922,13 @@ def backtest(
     ret_table = Table(show_header=True, header_style="bold cyan")
     ret_table.add_column("指标", style="white")
     ret_table.add_column("数值", justify="right", style="yellow")
-    ret_table.add_row("平均实际收益", f"{metrics.get('avg_actual_return', 0):+.3f}%")
+    ret_table.add_row("初始资金", f"${metrics.get('initial_capital', 0):,.0f}")
+    ret_table.add_row("最终权益", f"${metrics.get('final_equity', 0):,.2f}")
+    ret_table.add_row("总收益率", f"{metrics.get('total_return_pct', 0):+.2f}%")
+    ret_table.add_row("每笔平均收益", f"{metrics.get('avg_actual_return', 0):+.3f}%")
     ret_table.add_row("平均预期收益", f"{metrics.get('avg_expected_return', 0):+.3f}%")
     ret_table.add_row("夏普比率", f"{metrics.get('sharpe_ratio', 0):.2f}")
-    ret_table.add_row("历史峰值回落", f"{metrics.get('max_drawdown', 0):+.3f}%")
+    ret_table.add_row("历史峰值回落", f"{metrics.get('max_drawdown_pct', 0):+.2f}%")
     console.print(ret_table)
 
     # Stop/TP
@@ -958,14 +970,14 @@ def backtest(
         month_table.add_column("总快照", justify="right", style="cyan")
         month_table.add_column("方向快照", justify="right", style="cyan")
         month_table.add_column("准确率", justify="right", style="yellow")
-        month_table.add_column("收益合计", justify="right", style="white")
+        month_table.add_column("收益($)", justify="right", style="white")
         for month, stats in sorted(by_month.items()):
             month_table.add_row(
                 month,
                 str(stats.get("count", 0)),
                 str(stats.get("directional_count", 0)),
                 f"{stats.get('hit_rate', 0):.1%}",
-                f"{stats.get('pnl', 0):+.3f}%",
+                f"${stats.get('pnl_dollars', 0):+,.2f}",
             )
         console.print(month_table)
 
