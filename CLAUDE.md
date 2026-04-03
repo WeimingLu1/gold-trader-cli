@@ -72,7 +72,8 @@ gold-cli backtest --start 2026-02-01 --end 2026-02-28 --interval 4
 Key modules:
 - `app/history/gold.py` — GoldHistoryStore (yfinance GC=F, daily OHLCV)
 - `app/history/rates.py` — RatesHistoryStore (FRED API, treasury yields + DXY)
-- `app/history/cache.py` — SQLite-backed historical data cache
+- `app/history/news.py` — NewsHistoryStore (NewsAPI.org, gold-relevant headlines, SQLite cached)
+- `app/history/cache.py` — SQLite-backed historical data cache (gold_bars, rates_bars, news_headlines tables)
 - `app/backtest/engine.py` — BacktestEngine (warm_cache → build snapshots → evaluate → metrics)
 - `app/backtest/models.py` — BacktestRun, BacktestSnapshot, BacktestEvaluation ORM models
 - `app/backtest/metrics.py` — compute_metrics (direction_hit_rate, sharpe, max_drawdown, by_stance, by_month)
@@ -121,17 +122,6 @@ Data Collection → Feature Building → LLM Analysis → Rule Scoring → Trade
 
 ## Known Issues & Improvement Areas
 
-### Strategy Accuracy Calibration (High Priority)
-- The rule thresholds (`LONG_THRESHOLD=0.25`, `SHORT_THRESHOLD=-0.25` in `app/strategy/rules.py`) are too conservative for trending markets.
-- In strongly trending periods (e.g., gold bull runs), most scores fall within the neutral band, producing few actionable signals.
-- **Fix**: Re-calibrate thresholds or use adaptive thresholds based on regime detection.
-- Q1 2024 backtest: 33.3% direction accuracy; Feb 2026 backtest: 0% direction accuracy.
-
-### Stop/TP Trigger Rate Very Low
-- Stop-hit rate near 0% across all backtest periods — the ATR-based stop distances are too wide for the actual volatility.
-- TP-hit rate also near 0% — TP distances too wide or horizon too short.
-- **Fix**: Tighten ATR multiplier in `app/strategy/risk.py` or use regime-conditional multipliers.
-
 ### Intraday Historical Prices
 - `_get_historical_prices` uses linear interpolation between daily closes — this is a rough approximation.
 - In fast-moving markets (e.g., CPI releases), intraday price distribution is not linear.
@@ -146,6 +136,6 @@ Data Collection → Feature Building → LLM Analysis → Rule Scoring → Trade
 - **Improvement**: Skip weekend bars in intraday feature computation, or use weekly bars as the primary timeframe for low-frequency signals.
 
 ### Data Completeness in Backtest
-- News, COT, ETF flows are unavailable in backtest mode (set to 0/placeholder).
-- This reduces `data_completeness` to ~62.5% and may affect confidence scoring.
-- **Improvement**: Fetch news headlines retrospectively for backtest dates via news archive API.
+- COT and ETF flow data are unavailable in backtest mode (set to 0/placeholder).
+- News data now available via NewsAPI (historical headlines cached in SQLite).
+- `data_completeness` in backtest is ~75% (5/6 sources: market, macro, news, regime; missing COT, ETF).
