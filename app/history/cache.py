@@ -1,8 +1,6 @@
 """SQLite-backed historical data cache for backtesting."""
-import json
-import os
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 
@@ -25,6 +23,15 @@ CREATE TABLE IF NOT EXISTS rates_bars (
     dgs2 REAL, dgs5 REAL, dgs10 REAL, dgs30 REAL,
     dtwexbs REAL,           -- DXY index value
     fetched_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS news_headlines (
+    date TEXT NOT NULL,       -- YYYY-MM-DD of the news date
+    headline TEXT NOT NULL,
+    source TEXT,
+    url TEXT,
+    fetched_at TEXT,
+    PRIMARY KEY (date, headline)
 );
 """
 
@@ -97,3 +104,43 @@ def get_rates_bar(bar_date: date) -> dict | None:
     ).fetchone()
     conn.close()
     return _row_to_dict(row) if row else None
+
+
+# ── News headlines ──────────────────────────────────────────────────────────
+
+def cache_headline(bar_date: date, headline: str, source: str | None, url: str | None) -> None:
+    conn = _get_conn()
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO news_headlines (date, headline, source, url, fetched_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (bar_date.isoformat(), headline, source, url, datetime.utcnow().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_headlines(bar_date: date) -> list[dict]:
+    """Return all cached headlines for a given date."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT headline, source, url FROM news_headlines WHERE date = ?",
+        (bar_date.isoformat(),)
+    ).fetchall()
+    conn.close()
+    return [_row_to_dict(r) for r in rows]
+
+
+def has_news_cache(start_date: date, end_date: date) -> bool:
+    """Return True if we have headlines for most days in the range."""
+    conn = _get_conn()
+    count = conn.execute(
+        "SELECT COUNT(DISTINCT date) FROM news_headlines WHERE date BETWEEN ? AND ?",
+        (start_date.isoformat(), end_date.isoformat()),
+    ).fetchone()[0]
+    conn.close()
+    days = (end_date - start_date).days + 1
+    # Consider cached if we have at least 50% of weekdays
+    weekdays = sum(1 for i in range(days) if (start_date + timedelta(days=i)).weekday() < 5)
+    return count >= weekdays * 0.5

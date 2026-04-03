@@ -15,7 +15,9 @@ from app.strategy.rules import RuleEngine
 from app.strategy.risk import RiskManager
 from app.history.gold import GoldHistoryStore
 from app.history.rates import RatesHistoryStore
+from app.history.news import NewsHistoryStore
 from app.backtest.models import BacktestRun, BacktestSnapshot, BacktestEvaluation, Base
+from app.features.news_features import build_news_features_from_headlines
 from app.db.session import get_engine, get_session_factory
 
 
@@ -39,6 +41,7 @@ class BacktestEngine:
     def __init__(self):
         self.gold = GoldHistoryStore()
         self.rates = RatesHistoryStore()
+        self.news = NewsHistoryStore()
         self.scorer = Scorer(DEFAULT_WEIGHTS)
         self.rules = RuleEngine()
         self.risk = RiskManager()
@@ -52,7 +55,8 @@ class BacktestEngine:
         """Pre-fetch all historical data into local cache."""
         gold_count = self.gold.warm_cache(start_date, end_date)
         rates_count = self.rates.warm_cache(start_date, end_date)
-        return {"gold_bars": gold_count, "rates_bars": rates_count}
+        news_count = self.news.warm_cache(start_date, end_date)
+        return {"gold_bars": gold_count, "rates_bars": rates_count, "news_dates": news_count}
 
     def run(
         self,
@@ -239,12 +243,25 @@ class BacktestEngine:
         # Regime (no macro calendar for backtest — simplified)
         regime_feats = build_regime_features(market_feats["volatility_24h"], [])
 
-        # News features — not available in backtest
-        news_feats = {
-            "news_sentiment_score": 0.0,
-            "news_event_intensity": 0.0,
-            "is_gold_key_driver": False,
-        }
+        # News features — use cached historical headlines.
+        # Look-ahead safe: headlines from news_date are only used when as_of is on or after
+        # that date AND after 16:00 ET (when same-day news is plausibly available).
+        # Previous days' headlines are always safe to use.
+        news_headlines: list[dict] = []
+        news_date = gold_bar.get("date", bar_date.isoformat())
+        if isinstance(news_date, str):
+            news_date = date.fromisoformat(news_date)
+        # Same-day headlines only available after market close (16:00)
+        if as_of_time_hrs >= 16.0:
+            news_headlines.extend(self.news.get_headlines(news_date))
+        # Previous 3 trading days — always safe
+        for offset in range(1, 4):
+            prev_news_date = news_date - timedelta(days=offset)
+            while prev_news_date.weekday() >= 5:  # skip weekends
+                prev_news_date -= timedelta(days=1)
+            prev_h = self.news.get_headlines(prev_news_date)
+            news_headlines.extend(prev_h)
+        news_feats = build_news_features_from_headlines(news_headlines)
 
         # Build FeatureSnapshot
         snapshot_at = as_of
@@ -281,7 +298,9 @@ class BacktestEngine:
 
         # Rules
         stance, risk_note = self.rules.apply_risk_rules(
-            self.rules.map_score_to_stance(composite_score, fs.confidence_score),
+            self.rules.map_score_to_stance(
+                composite_score, fs.confidence_score, fs.volatility_regime
+            ),
             fs,
         )
 

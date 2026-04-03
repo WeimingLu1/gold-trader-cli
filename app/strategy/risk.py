@@ -12,9 +12,10 @@ class RiskManager:
     don't adapt to current market conditions.
     """
 
-    BASE_STOP_PCT = 0.015    # 1.5% base stop
-    BASE_TP_PCT = 0.025      # 2.5% base take-profit
-    ATR_MULTIPLIER = 2.0
+    BASE_STOP_PCT = 0.005    # 0.5% base stop (tightened from 1.5%)
+    BASE_TP_PCT = 0.010      # 1.0% base take-profit (tightened from 2.5%)
+    ATR_MULTIPLIER = 1.0     # reduced from 2.0
+    TP_RATIO = 1.2           # TP = stop * 1.2 (tightened from 1.5x)
 
     def compute_stop_distance(self, features: FeatureSnapshot, horizon_hours: int = 4) -> float:
         """
@@ -46,7 +47,7 @@ class RiskManager:
             "normal": 1.0,
             "high": 1.5,
         }.get(features.volatility_regime, 1.0)
-        tp = vol_scaled * self.ATR_MULTIPLIER * vol_multiplier * 1.5  # TP is wider than stop
+        tp = vol_scaled * self.ATR_MULTIPLIER * vol_multiplier * self.TP_RATIO
         # Scale by confidence: low confidence → tighter TP
         tp *= max(0.5, features.confidence_score)
         # Fall back to base TP if unreasonably small

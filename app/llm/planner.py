@@ -65,7 +65,9 @@ class Planner:
         # Override analyst confidence with risk-adjusted version
         final_confidence = min(analyst_output.confidence, adjusted_confidence)
 
-        stance = self.rule_engine.map_score_to_stance(composite_score, final_confidence)
+        stance = self.rule_engine.map_score_to_stance(
+            composite_score, final_confidence, features.volatility_regime
+        )
 
         # ── Step 2: Apply risk guardrails ────────────────────────────────────────
         stance, risk_note = self.rule_engine.apply_risk_rules(stance, features)

@@ -10,19 +10,24 @@ class RuleEngine:
     This prevents the model from making unconstrained directional bets.
     """
 
-    # Score thresholds
-    LONG_THRESHOLD = 0.25
-    SHORT_THRESHOLD = -0.25
+    # Score thresholds — adaptive based on volatility regime
+    LONG_THRESHOLD_NORMAL = 0.15    # normal/low volatility: more signals
+    SHORT_THRESHOLD_NORMAL = -0.15
+    LONG_THRESHOLD_HIGH = 0.25      # high volatility: tighter signals needed
+    SHORT_THRESHOLD_HIGH = -0.25
     HIGH_CONFIDENCE = 0.7
-    LOW_CONFIDENCE = 0.3
+    LOW_CONFIDENCE = 0.25          # lowered from 0.3 to allow more signals through
 
-    def map_score_to_stance(self, score: float, confidence: float) -> str:
+    def map_score_to_stance(
+        self, score: float, confidence: float, volatility_regime: str = "normal"
+    ) -> str:
         """
         Map composite score and confidence to a stance.
 
         Args:
             score: Composite score from -1.0 to 1.0.
             confidence: Confidence score from 0.0 to 1.0.
+            volatility_regime: "low" | "normal" | "high" — widens thresholds in high vol.
 
         Returns:
             stance: "long" | "short" | "neutral"
@@ -31,9 +36,17 @@ class RuleEngine:
         if confidence < self.LOW_CONFIDENCE:
             return "neutral"
 
-        if score > self.LONG_THRESHOLD:
+        # Adaptive thresholds based on volatility regime
+        if volatility_regime == "high":
+            threshold_high = self.LONG_THRESHOLD_HIGH
+            threshold_low = self.SHORT_THRESHOLD_HIGH
+        else:
+            threshold_high = self.LONG_THRESHOLD_NORMAL
+            threshold_low = self.SHORT_THRESHOLD_NORMAL
+
+        if score > threshold_high:
             return "long"
-        elif score < self.SHORT_THRESHOLD:
+        elif score < threshold_low:
             return "short"
         return "neutral"
 
@@ -64,10 +77,9 @@ class RuleEngine:
             notes.append(f"数据不完整（{features.data_completeness:.0%}）— 强制中立。")
             adjusted = "neutral"
 
-        # 规则4：高波动覆盖方向性立场
+        # 规则4：高波动环境下保持立场但提示风险（不强制中立）
         if features.volatility_regime == "high" and adjusted != "neutral":
-            notes.append("高波动覆盖方向性立场。")
-            adjusted = "neutral"
+            notes.append("高波动环境 — 保持方向性敞口但请关注风险。")
 
         risk_note = " ".join(notes) if notes else "正常状态 — 无风控警告。"
         return adjusted, risk_note
@@ -76,8 +88,8 @@ class RuleEngine:
         self,
         stance: str,
         entry_price: float,
-        stop_pct: float = 0.015,
-        tp_pct: float = 0.025,
+        stop_pct: float = 0.005,
+        tp_pct: float = 0.010,
     ) -> float:
         """
         Estimate expected return % for a given stance.
