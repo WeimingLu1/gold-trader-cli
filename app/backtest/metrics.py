@@ -61,28 +61,28 @@ def compute_metrics(
     win_rate_long = long_wins / len(directional_long) if directional_long else 0.0
     win_rate_short = short_wins / len(directional_short) if directional_short else 0.0
 
-    # Stop/TP rates
-    stop_hits = sum(1 for e in evaluations if e.stop_hit == "stop")
-    tp_hits = sum(1 for e in evaluations if e.stop_hit == "tp")
-    neither = sum(1 for e in evaluations if e.stop_hit == "neither")
-    n = len(evaluations) or 1
+    # Stop/TP rates — based on directional evaluations only
+    n_dir = len(directional) or 1
+    stop_hits = sum(1 for e in directional if e.stop_hit == "stop")
+    tp_hits = sum(1 for e in directional if e.stop_hit == "tp")
+    neither = sum(1 for e in directional if e.stop_hit == "neither")
 
-    # Sharpe ratio (annualized, assuming 4h intervals)
-    returns = [e.actual_return for e in evaluations if e.actual_return is not None]
-    if len(returns) >= 2:
-        mean_ret = sum(returns) / len(returns)
-        std_ret = (sum((r - mean_ret) ** 2 for r in returns) / (len(returns) - 1)) ** 0.5
+    # Return metrics — directional snapshots only (neutral has no position, actual_return=0)
+    dir_returns = [e.actual_return for e in directional if e.actual_return is not None]
+    if len(dir_returns) >= 2:
+        mean_ret = sum(dir_returns) / len(dir_returns)
+        std_ret = (sum((r - mean_ret) ** 2 for r in dir_returns) / (len(dir_returns) - 1)) ** 0.5
         # Annualize: ~6.5 4h periods per day, ~252 trading days
         periods_per_year = 6.5 * 252
         sharpe = (mean_ret / std_ret) * (periods_per_year ** 0.5) if std_ret > 0 else 0.0
     else:
         sharpe = 0.0
 
-    # Max drawdown
+    # Max drawdown on directional equity curve
     max_dd = 0.0
     peak = 0.0
     cumulative = 0.0
-    for r in returns:
+    for r in dir_returns:
         cumulative += r
         if cumulative > peak:
             peak = cumulative
@@ -91,32 +91,37 @@ def compute_metrics(
             max_dd = dd
 
     # Monthly breakdown
-    monthly: dict[str, dict] = defaultdict(lambda: {"count": 0, "wins": 0, "pnl": 0.0})
+    # accuracy uses directional count (excluding neutral stances)
+    # pnl is the sum of actual_return % per snapshot (non-compounded)
+    monthly: dict[str, dict] = defaultdict(lambda: {"count": 0, "wins": 0, "directional_count": 0, "pnl": 0.0})
     for e in evaluations:
         if e.actual_return is None:
             continue
         d: date = e.snapshot.as_of.date()
         key = d.strftime("%Y-%m")
         monthly[key]["count"] += 1
-        if e.direction_hit:
-            monthly[key]["wins"] += 1
         monthly[key]["pnl"] += e.actual_return or 0
+        if e.direction_hit is not None:
+            monthly[key]["directional_count"] += 1
+            if e.direction_hit:
+                monthly[key]["wins"] += 1
 
     monthly_summary = {}
     for month, stats in sorted(monthly.items()):
-        hit = stats["wins"] / stats["count"] if stats["count"] else 0
+        hit = stats["wins"] / stats["directional_count"] if stats["directional_count"] else 0
         monthly_summary[month] = {
             "count": stats["count"],
+            "directional_count": stats["directional_count"],
             "hit_rate": round(hit, 4),
             "pnl": round(stats["pnl"], 4),
         }
 
-    # Avg expected vs actual
-    evals_w_exp = [e for e in evaluations if e.expected_return is not None]
+    # Avg expected vs actual — directional snapshots only
+    evals_w_exp = [e for e in directional if e.expected_return is not None]
     avg_expected = (
         sum(e.expected_return for e in evals_w_exp) / len(evals_w_exp) if evals_w_exp else 0
     )
-    avg_actual = sum(returns) / len(returns) if returns else 0
+    avg_actual = sum(dir_returns) / len(dir_returns) if dir_returns else 0
 
     return {
         "total_snapshots": len(snapshots),
@@ -124,9 +129,9 @@ def compute_metrics(
         "direction_hit_rate": round(direction_hit_rate, 4),
         "win_rate_long": round(win_rate_long, 4),
         "win_rate_short": round(win_rate_short, 4),
-        "stop_hit_rate": round(stop_hits / n, 4),
-        "tp_hit_rate": round(tp_hits / n, 4),
-        "neither_rate": round(neither / n, 4),
+        "stop_hit_rate": round(stop_hits / n_dir, 4),
+        "tp_hit_rate": round(tp_hits / n_dir, 4),
+        "neither_rate": round(neither / n_dir, 4),
         "avg_expected_return": round(avg_expected, 4),
         "avg_actual_return": round(avg_actual, 4),
         "sharpe_ratio": round(sharpe, 2),

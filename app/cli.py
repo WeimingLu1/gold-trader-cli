@@ -916,7 +916,7 @@ def backtest(
     ret_table.add_row("平均实际收益", f"{metrics.get('avg_actual_return', 0):+.3f}%")
     ret_table.add_row("平均预期收益", f"{metrics.get('avg_expected_return', 0):+.3f}%")
     ret_table.add_row("夏普比率", f"{metrics.get('sharpe_ratio', 0):.2f}")
-    ret_table.add_row("最大回撤", f"{metrics.get('max_drawdown', 0):+.3f}%")
+    ret_table.add_row("历史峰值回落", f"{metrics.get('max_drawdown', 0):+.3f}%")
     console.print(ret_table)
 
     # Stop/TP
@@ -955,13 +955,15 @@ def backtest(
         console.print("\n[bold cyan]逐月统计[/bold cyan]")
         month_table = Table(show_header=True, header_style="bold cyan")
         month_table.add_column("月份", style="white")
-        month_table.add_column("次数", justify="right", style="cyan")
+        month_table.add_column("总快照", justify="right", style="cyan")
+        month_table.add_column("方向快照", justify="right", style="cyan")
         month_table.add_column("准确率", justify="right", style="yellow")
-        month_table.add_column("累计收益", justify="right", style="white")
+        month_table.add_column("收益合计", justify="right", style="white")
         for month, stats in sorted(by_month.items()):
             month_table.add_row(
                 month,
                 str(stats.get("count", 0)),
+                str(stats.get("directional_count", 0)),
                 f"{stats.get('hit_rate', 0):.1%}",
                 f"{stats.get('pnl', 0):+.3f}%",
             )

@@ -404,7 +404,7 @@ class BacktestEngine:
 
         # Returns
         actual_return = round(price_change_pct * 100, 4)
-        expected_return = plan.get("tp_pct", 0.025) * 100
+        expected_return = plan.get("tp_pct", 0.010) * 100
 
         # P&L
         pnl_pct = actual_return if stance == "long" else (-actual_return if stance == "short" else 0.0)
