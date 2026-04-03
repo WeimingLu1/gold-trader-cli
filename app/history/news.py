@@ -27,12 +27,19 @@ class NewsHistoryStore:
 
         Returns number of unique dates with headlines cached.
         Note: NewsAPI free tier only provides ~1 month of history.
+        Historical backtest dates older than ~30 days will silently skip the fetch.
         """
         settings = get_settings()
         api_key = settings.news_api_key
 
         if not api_key or api_key in ("", "your_news_api_key_here"):
             print("[NewsHistory] No NewsAPI key configured.")
+            return 0
+
+        # NewsAPI free tier only supports ~1 month of history
+        cutoff = date.today() - timedelta(days=29)
+        if end_date < cutoff:
+            # Historical backtest beyond free tier window — skip silently
             return 0
 
         # NewsAPI paginates — fetch up to 100 articles per page
