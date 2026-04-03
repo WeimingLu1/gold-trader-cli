@@ -14,7 +14,8 @@ class Evaluator:
     3. Expected return vs actual return
     """
 
-    DIRECTION_TOLERANCE = 0.001  # 0.1% — threshold to call it "up" vs "flat"
+    # 0.1% — threshold to call price change "up" vs "flat" (noise filter)
+    DIRECTION_TOLERANCE = 0.001
 
     def evaluate(self, snap: Snapshot, current_price: float) -> Evaluation:
         """

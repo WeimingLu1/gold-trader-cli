@@ -39,7 +39,8 @@ class FeatureSnapshot(BaseModel):
     # ── Regime features ────────────────────────────────────────────────────────
     risk_state: str = "neutral"         # risk-on | risk-off | neutral
     volatility_regime: str = "normal"   # high | normal | low
-    event_window: bool = False          # True if high-impact event within 24h
+    event_window: bool = False          # True if high-impact event within 4h
+    hours_until_event: float | None = None  # hours until nearest high-impact event
 
     # ── Positioning features ───────────────────────────────────────────────────
     cot_net_positions: float = 0.0

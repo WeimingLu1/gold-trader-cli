@@ -38,6 +38,7 @@ from app.collectors import (
     XAUUSDCollector,
     TreasuryYieldCollector,
     RealRateCollector,
+    DXYCollector,
     NewsCollector,
     MacroCalendarCollector,
     PositioningCollector,
@@ -67,12 +68,14 @@ async def _collect_all() -> dict:
     """运行所有已启用采集器，返回结果字典。"""
     settings = get_settings()
     results = {}
+    failed = []
 
     collectors = [("xauusd", XAUUSDCollector())]
     if settings.enable_rates:
         collectors += [
             ("treasury_yields", TreasuryYieldCollector()),
             ("real_rates", RealRateCollector()),
+            ("dxy", DXYCollector()),
         ]
     if settings.enable_news:
         collectors += [("news", NewsCollector())]
@@ -87,10 +90,17 @@ async def _collect_all() -> dict:
         try:
             data = await collector.collect()
             results[name] = data
-            console.print(f"  [green]+[/green] {name}: {len(data)} 条数据")
+            source_tag = data[0].source if data else "empty"
+            console.print(f"  [green]+[/green] {name}: {len(data)} 条数据  [dim]({source_tag})[/dim]")
         except Exception as e:
             console.print(f"  [red]![/red] {name}: {e}")
             results[name] = []
+            failed.append((name, str(e)))
+
+    if failed:
+        console.print(f"\n[yellow]⚠️  {len(failed)} 个采集器失败，将使用 fallback/mock 数据:[/yellow]")
+        for name, err in failed:
+            console.print(f"  [yellow]  {name}: {err}[/yellow]")
 
     return results
 
@@ -99,7 +109,7 @@ def _build_snapshot(collected: dict, horizon_hours: int = 4) -> FeatureSnapshot:
     """从采集数据构建 FeatureSnapshot。"""
     now = datetime.utcnow()
 
-    # XAU 价格
+    # ── XAU 价格 ────────────────────────────────────────────────────────────
     xau_data = collected.get("xauusd", [])
     if xau_data:
         xau = xau_data[0].normalized_payload or xau_data[0].raw_payload
@@ -109,25 +119,51 @@ def _build_snapshot(collected: dict, horizon_hours: int = 4) -> FeatureSnapshot:
         xau_price = 0.0
         xau_fetched_at = now
 
-    # 市场特征（用当前价格模拟历史）
+    # ── 市场特征（用当前价格模拟历史 — TODO: 接入真实历史价格）────────────
     price_store = HistoricalPriceStore()
     for h in [1, 4, 12, 24]:
         price_store.add(now - timedelta(hours=h), xau_price * (1 - 0.001 * h))
     price_store.add(now, xau_price)
     market_feats = build_market_features(xau_price, price_store.get_history(), now)
 
-    # 宏观特征（mock）
+    # ── 宏观特征（从真实采集器提取）────────────────────────────────────────
+    # DXY
+    dxy_data = collected.get("dxy", [])
+    if dxy_data and dxy_data[0].normalized_payload:
+        np = dxy_data[0].normalized_payload
+        dxy_current = np.get("dxy", 104.5)
+        dxy_previous = np.get("dxy_prev")
+    else:
+        dxy_current, dxy_previous = 104.5, None
+
+    # 国债收益率（当前 + 前一值）
+    yields_data = {item.symbol: item.normalized_payload for item in collected.get("treasury_yields", []) if item.normalized_payload}
+    yield_10y_current = yields_data.get("DGS10", {}).get("yield_pct", 4.38)
+    yield_10y_previous = yields_data.get("DGS10", {}).get("yield_pct_prev")
+    yield_2y_current = yields_data.get("DGS2", {}).get("yield_pct", 4.62)
+    yield_2y_previous = yields_data.get("DGS2", {}).get("yield_pct_prev")
+
+    # 实际利率
+    real_rate_data = collected.get("real_rates", [])
+    if real_rate_data and real_rate_data[0].normalized_payload:
+        real_rate_proxy = real_rate_data[0].normalized_payload.get("real_rate_pct", 2.03)
+    else:
+        real_rate_proxy = 2.03
+
     macro_feats = build_macro_features(
-        dxy_current=104.5, dxy_previous=104.3,
-        yield_10y_current=4.38, yield_10y_previous=4.36,
-        yield_2y_current=4.62, yield_2y_previous=4.60,
-        real_rate_proxy=2.03,
+        dxy_current=dxy_current,
+        dxy_previous=dxy_previous if dxy_previous and dxy_previous > 0 else dxy_current,
+        yield_10y_current=yield_10y_current,
+        yield_10y_previous=yield_10y_previous if yield_10y_previous else yield_10y_current,
+        yield_2y_current=yield_2y_current,
+        yield_2y_previous=yield_2y_previous if yield_2y_previous else yield_2y_current,
+        real_rate_proxy=real_rate_proxy,
     )
 
-    # 新闻特征
+    # ── 新闻特征 ────────────────────────────────────────────────────────────
     news_feats = build_news_features(collected.get("news", []))
 
-    # 市场状态特征
+    # ── 市场状态特征 ────────────────────────────────────────────────────────
     regime_feats = build_regime_features(market_feats["volatility_24h"], collected.get("macro_calendar", []))
 
     # 持仓数据（mock）
@@ -135,13 +171,27 @@ def _build_snapshot(collected: dict, horizon_hours: int = 4) -> FeatureSnapshot:
     if pos_data and pos_data[0].normalized_payload:
         pos = pos_data[0].normalized_payload
         cot_net = pos.get("net_positions", 0.0)
-        etf_flow = pos.get("flow_24h_oz", 0.0)
     else:
         cot_net = 0.0
-        etf_flow = 0.0
+
+    # ETF 流量（从 dedicated collector 读）
+    etf_flow = 0.0
+    etf_data = collected.get("etf_flows", [])
+    if etf_data:
+        for item in etf_data:
+            if item.normalized_payload:
+                etf_flow += item.normalized_payload.get("flow_24h_oz", 0)
 
     available = sum(1 for v in collected.values() if v)
-    completeness = available / 7
+    completeness = available / 8
+
+    # Proxy confidence from factor alignment: compute rough composite score magnitude
+    # DXY and real_rate are the most reliable factors
+    macro_signal = (-macro_feats["dxy_change"] / 1.35) * 0.222 + (-macro_feats["real_rate_proxy"] / 9.0) * 0.222
+    tech_signal = (1.0 if market_feats["trend_state"] == "bullish" else -1.0 if market_feats["trend_state"] == "bearish" else 0.0) * 0.222
+    vol_signal = (-0.3 if regime_feats["volatility_regime"] == "high" else 0.1 if regime_feats["volatility_regime"] == "low" else 0.0) * 0.167
+    rough_composite = macro_signal + tech_signal + vol_signal
+    confidence_score_proxy = min(1.0, abs(rough_composite) * 2.5)
 
     return FeatureSnapshot(
         snapshot_at=now,
@@ -164,9 +214,10 @@ def _build_snapshot(collected: dict, horizon_hours: int = 4) -> FeatureSnapshot:
         risk_state=regime_feats["risk_state"],
         volatility_regime=regime_feats["volatility_regime"],
         event_window=regime_feats["event_window"],
+        hours_until_event=regime_feats.get("hours_until_event"),
         cot_net_positions=cot_net,
         etf_flow_24h=etf_flow,
-        confidence_score=0.5,
+        confidence_score=confidence_score_proxy,
         data_completeness=completeness,
     )
 
@@ -220,11 +271,13 @@ def _print_collected_summary(collected: dict) -> None:
 
     # COT 持仓
     pos_data = collected.get("positioning", [])
-    if pos_data and pos_data[0].raw_payload:
-        rp = pos_data[0].raw_payload
+    if pos_data and pos_data[0].normalized_payload:
+        rp = pos_data[0].normalized_payload
+        net = rp.get("net_positions", 0)
+        ratio = rp.get("long_short_ratio", 0)
         console.print(
-            f"  COT 持仓: 非商业净多头 [bold]{rp.get('net_noncommercial_positions', 0):+,}[/bold] 手"
-            f"  |  多空比 [bold]{rp.get('funds_long_short_ratio', 0):.2f}[/bold]"
+            f"  COT 持仓: 非商业净多头 [bold]{net:+,}[/bold] 手"
+            f"  |  多空比 [bold]{ratio:.2f}[/bold]"
         )
 
     # ETF 流量
@@ -232,10 +285,9 @@ def _print_collected_summary(collected: dict) -> None:
     if etf_data:
         flow_lines = []
         for item in etf_data:
-            if item.raw_payload:
+            if item.normalized_payload:
                 ticker = item.symbol or "?"
-                data = item.raw_payload.get(ticker, {})
-                flow = data.get("flow_24h", 0)
+                flow = item.normalized_payload.get("flow_24h_oz", 0)
                 direction = "流入 ↑" if flow > 0 else "流出 ↓" if flow < 0 else "持平"
                 flow_lines.append(f"{ticker}: {flow:+,.0f} oz {direction}")
         if flow_lines:
@@ -492,6 +544,12 @@ def doctor():
     setup_logging()
     settings = get_settings()
 
+    # Determine if running in mock mode (placeholder or empty key)
+    mock_keys = ("", "your_openai_api_key_here")
+    is_mock_llm = settings.llm_api_key in mock_keys
+    is_mock_gold = settings.gold_api_key in mock_keys
+    is_mock_fred = settings.fred_api_key in mock_keys
+
     table = Table(title="系统健康检查", show_header=False)
     table.add_column("检查项", style="cyan")
     table.add_column("状态", style="white")
@@ -500,7 +558,9 @@ def doctor():
         ("Python 版本", "✅ 3.11+"),
         ("数据库地址", settings.database_url),
         ("LLM 模型", settings.llm_model),
-        ("LLM API Key", "✅ 已配置" if settings.llm_api_key else "⚠️  未配置（mock 模式）"),
+        ("LLM API Key", "⚠️  mock 模式（占位符）" if is_mock_llm else "✅ 已配置"),
+        ("GoldAPI Key", "⚠️  mock 模式" if is_mock_gold else "✅ 已配置"),
+        ("FRED API Key", "⚠️  mock 模式" if is_mock_fred else "✅ 已配置"),
         ("调度间隔", f"每 {settings.schedule_interval_hours} 小时"),
         ("默认预测窗口", f"{settings.default_horizon_hours} 小时"),
         ("日志级别", settings.log_level),
@@ -511,7 +571,10 @@ def doctor():
         table.add_row(name, str(status))
 
     console.print(table)
-    console.print("\n[green]✓ 所有检查通过[/green]")
+    if is_mock_llm or is_mock_gold or is_mock_fred:
+        console.print("\n[yellow]⚠️  部分数据源使用 mock 模式 — 请检查 .env 配置[/yellow]")
+    else:
+        console.print("\n[green]✓ 所有检查通过 — 生产模式[/green]")
 
 
 @app.command()
@@ -647,14 +710,23 @@ def evaluate_pending(
     async def _get_current_price():
         collector = XAUUSDCollector()
         data = await collector.collect()
-        return data[0].normalized_payload["price"]
+        return data[0].normalized_payload.get("price")
 
+    # Fetch price once at evaluation start (use same price for all in batch for consistency)
     current_price = asyncio.run(_get_current_price())
-    console.print(f"[dim]当前 XAU 价格: ${current_price}[/dim]")
+    eval_time = datetime.utcnow()
+    console.print(f"[dim]评估时间: {eval_time}  XAU 价格: ${current_price}[/dim]")
 
     for snap in matured:
         try:
             eval_result = evaluator.evaluate(snap, current_price)
+            # Check if snapshot's horizon had truly elapsed
+            snap_maturity = snap.available_time + timedelta(hours=snap.horizon_hours) if snap.available_time else None
+            if snap_maturity and eval_time < snap_maturity:
+                console.print(
+                    f"  [yellow]~[/yellow] 快照 {snap.id}: 窗口尚未完全到期"
+                    f"（到期时间: {snap_maturity.strftime('%H:%M:%S')}）"
+                )
             eval_repo.create(snap.id, **{
                 "xau_price_at_horizon": eval_result.xau_price_at_horizon,
                 "direction_actual": eval_result.direction_actual,
@@ -771,6 +843,131 @@ def prompts_list():
         planner_prompt[:500] + "...",
         title="规划师提示词（前 500 字符）"
     ))
+
+
+@app.command()
+def backtest(
+    start: str = typer.Option(..., help="回测开始日期，格式 YYYY-MM-DD"),
+    end: str = typer.Option(..., help="回测结束日期，格式 YYYY-MM-DD"),
+    interval: int = typer.Option(4, help="快照间隔（小时）"),
+    name: str = typer.Option("default", help="回测名称"),
+):
+    """基于真实历史数据运行策略回测。
+
+    使用 yfinance 黄金期货历史价格和 FRED 宏观数据，
+    在每个历史时点模拟策略决策并与后续实际走势对比。
+    """
+    setup_logging()
+    from datetime import date
+    from app.backtest import BacktestEngine
+
+    try:
+        start_date = date.fromisoformat(start)
+        end_date = date.fromisoformat(end)
+    except ValueError:
+        console.print("[red]日期格式错误，请使用 YYYY-MM-DD[/red]")
+        raise typer.Exit(1)
+
+    if start_date >= end_date:
+        console.print("[red]开始日期必须早于结束日期[/red]")
+        raise typer.Exit(1)
+
+    console.print(Panel(f"[yellow]历史回测系统启动[/yellow]\n"
+                        f"  区间: {start} ~ {end}\n"
+                        f"  间隔: {interval} 小时\n"
+                        f"  名称: {name}"))
+
+    engine = BacktestEngine()
+
+    # Warm cache
+    console.print("\n[bold cyan]第 1 步：预加载历史数据...[/bold cyan]")
+    cache_info = engine.warm_cache(start_date, end_date)
+    console.print(
+        f"  黄金价格栏: [green]{cache_info['gold_bars']}[/green]  |  "
+        f"收益率/DXY 栏: [green]{cache_info['rates_bars']}[/green]"
+    )
+
+    # Run backtest
+    console.print("\n[bold cyan]第 2 步：运行回测...[/bold cyan]")
+    result = engine.run(start_date, end_date, interval_hours=interval, name=name)
+    metrics = result["metrics"]
+
+    console.print(
+        f"\n  总快照: [cyan]{result['total_snapshots']}[/cyan]  |  "
+        f"评估数: [cyan]{result['evaluated']}[/cyan]  |  "
+        f"跳过: [yellow]{result['skipped']}[/yellow]"
+    )
+
+    # Direction accuracy
+    console.print("\n[bold cyan]方向准确率[/bold cyan]")
+    dir_table = Table(show_header=True, header_style="bold cyan")
+    dir_table.add_column("指标", style="white")
+    dir_table.add_column("数值", justify="right", style="yellow")
+    dir_table.add_row("整体准确率", f"{metrics.get('direction_hit_rate', 0):.1%}")
+    dir_table.add_row("多头胜率", f"{metrics.get('win_rate_long', 0):.1%}")
+    dir_table.add_row("空头胜率", f"{metrics.get('win_rate_short', 0):.1%}")
+    console.print(dir_table)
+
+    # Returns
+    console.print("\n[bold cyan]收益统计[/bold cyan]")
+    ret_table = Table(show_header=True, header_style="bold cyan")
+    ret_table.add_column("指标", style="white")
+    ret_table.add_column("数值", justify="right", style="yellow")
+    ret_table.add_row("平均实际收益", f"{metrics.get('avg_actual_return', 0):+.3f}%")
+    ret_table.add_row("平均预期收益", f"{metrics.get('avg_expected_return', 0):+.3f}%")
+    ret_table.add_row("夏普比率", f"{metrics.get('sharpe_ratio', 0):.2f}")
+    ret_table.add_row("最大回撤", f"{metrics.get('max_drawdown', 0):+.3f}%")
+    console.print(ret_table)
+
+    # Stop/TP
+    console.print("\n[bold cyan]止损/止盈触发率[/bold cyan]")
+    st_table = Table(show_header=True, header_style="bold cyan")
+    st_table.add_column("指标", style="white")
+    st_table.add_column("数值", justify="right", style="yellow")
+    st_table.add_row("止损触发", f"{metrics.get('stop_hit_rate', 0):.1%}")
+    st_table.add_row("止盈触发", f"{metrics.get('tp_hit_rate', 0):.1%}")
+    st_table.add_row("未触发", f"{metrics.get('neither_rate', 0):.1%}")
+    console.print(st_table)
+
+    # By stance
+    by_stance = metrics.get("by_stance", {})
+    if by_stance:
+        console.print("\n[bold cyan]分立场统计[/bold cyan]")
+        stance_table = Table(show_header=True, header_style="bold cyan")
+        stance_table.add_column("立场", style="white")
+        stance_table.add_column("次数", justify="right", style="cyan")
+        stance_table.add_column("准确率", justify="right", style="yellow")
+        stance_table.add_column("平均收益", justify="right", style="white")
+        for stance in ("long", "short", "neutral"):
+            if stance in by_stance:
+                s = by_stance[stance]
+                stance_table.add_row(
+                    stance,
+                    str(s.get("count", 0)),
+                    f"{s.get('hit_rate', 0):.1%}",
+                    f"{s.get('avg_return', 0):+.3f}%",
+                )
+        console.print(stance_table)
+
+    # Monthly breakdown
+    by_month = metrics.get("by_month", {})
+    if by_month:
+        console.print("\n[bold cyan]逐月统计[/bold cyan]")
+        month_table = Table(show_header=True, header_style="bold cyan")
+        month_table.add_column("月份", style="white")
+        month_table.add_column("次数", justify="right", style="cyan")
+        month_table.add_column("准确率", justify="right", style="yellow")
+        month_table.add_column("累计收益", justify="right", style="white")
+        for month, stats in sorted(by_month.items()):
+            month_table.add_row(
+                month,
+                str(stats.get("count", 0)),
+                f"{stats.get('hit_rate', 0):.1%}",
+                f"{stats.get('pnl', 0):+.3f}%",
+            )
+        console.print(month_table)
+
+    console.print(f"\n[green]✓ 回测完成 (run_id={result['run_id']})[/green]")
 
 
 @app.command()

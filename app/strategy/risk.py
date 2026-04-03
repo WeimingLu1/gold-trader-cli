@@ -1,4 +1,5 @@
 """Risk management — position sizing hints, stop/TP rule generation."""
+import math
 from app.features.base import FeatureSnapshot
 
 
@@ -15,40 +16,42 @@ class RiskManager:
     BASE_TP_PCT = 0.025      # 2.5% base take-profit
     ATR_MULTIPLIER = 2.0
 
-    def compute_stop_distance(self, features: FeatureSnapshot) -> float:
+    def compute_stop_distance(self, features: FeatureSnapshot, horizon_hours: int = 4) -> float:
         """
         Compute stop-loss distance as a fraction of entry price.
 
-        In production: use ATR (Average True Range) from price data.
-        For now, scale by volatility regime.
+        Uses hourly volatility (derived from annualized vol) scaled by horizon,
+        then multiplied by ATR-style multiplier and regime adjustment.
         """
+        # Convert annualized vol to hourly vol: hourly = ann_vol / sqrt(252 * 24)
+        hourly_vol = features.volatility_4h / math.sqrt(252 * 24)
+        # Scale by sqrt(horizon) — volatility scales with time
+        vol_scaled = hourly_vol * math.sqrt(horizon_hours)
+        # Apply ATR-style multiplier (2.0x) and regime scaling
         vol_multiplier = {
             "low": 0.8,
             "normal": 1.0,
             "high": 1.5,
         }.get(features.volatility_regime, 1.0)
+        stop_distance = vol_scaled * self.ATR_MULTIPLIER * vol_multiplier
+        # Fall back to base stop if computed distance is unreasonably small
+        return max(stop_distance, self.BASE_STOP_PCT * vol_multiplier)
 
-        # High volatility regime → wider stops
-        if features.volatility_regime == "high":
-            return self.BASE_STOP_PCT * 1.5
-        elif features.volatility_regime == "low":
-            return self.BASE_STOP_PCT * 0.8
-        return self.BASE_STOP_PCT
-
-    def compute_take_profit_distance(self, features: FeatureSnapshot) -> float:
+    def compute_take_profit_distance(self, features: FeatureSnapshot, horizon_hours: int = 4) -> float:
         """Compute take-profit distance scaled by confidence and regime."""
+        hourly_vol = features.volatility_4h / math.sqrt(252 * 24)
+        vol_scaled = hourly_vol * math.sqrt(horizon_hours)
         vol_multiplier = {
             "low": 0.8,
             "normal": 1.0,
             "high": 1.5,
         }.get(features.volatility_regime, 1.0)
-
-        tp = self.BASE_TP_PCT * vol_multiplier
-
+        tp = vol_scaled * self.ATR_MULTIPLIER * vol_multiplier * 1.5  # TP is wider than stop
         # Scale by confidence: low confidence → tighter TP
         tp *= max(0.5, features.confidence_score)
-
-        return tp
+        # Fall back to base TP if unreasonably small
+        base_tp = self.BASE_TP_PCT * vol_multiplier
+        return max(tp, base_tp)
 
     def adjust_confidence(self, features: FeatureSnapshot) -> float:
         """

@@ -31,8 +31,8 @@ class Settings(BaseSettings):
     enable_rates: bool = True
     enable_news: bool = True
     enable_macro_calendar: bool = True
-    enable_positioning: bool = False
-    enable_etf_flows: bool = False
+    enable_positioning: bool = True
+    enable_etf_flows: bool = True
 
     # External API keys
     gold_api_key: str = ""

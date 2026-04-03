@@ -251,6 +251,7 @@ sqlite3 gold_trader.db "DELETE FROM snapshots WHERE id > 1;"
 | `weights-show` | 显示当前策略权重 |
 | `prompts-list` | 预览当前提示词 |
 | `replay <id>` | 用历史快照重放分析 |
+| `backtest` | 基于真实历史数据回测策略 |
 
 ---
 
@@ -290,7 +291,26 @@ cli/            → 命令行界面（Typer）
 
 ---
 
-## 数据库结构
+### 场景九：基于真实历史数据回测策略
+
+```bash
+# 回测2024年全年，4小时间隔
+gold-cli backtest --start 2024-01-01 --end 2024-12-31 --interval 4
+
+# 回测2026年2月
+gold-cli backtest --start 2026-02-01 --end 2026-02-28 --interval 4
+```
+
+**回测原理：**
+- 用 yfinance 历史黄金期货数据 + FRED 历史收益率数据
+- 在每个历史时点用规则引擎模拟策略决策（不使用 LLM）
+- 对比策略预测与后续实际价格走势
+
+**输出指标：** 方向准确率、多头/空头胜率、夏普比率、最大回撤、逐月统计
+
+> 回测结果说明：策略在趋势明显的市场（如2024年黄金牛市）中方向准确率较低，是因为规则阈值（±0.25）过于保守，导致大部分时间输出neutral。需重新校准阈值或使用自适应阈值。
+
+---
 
 默认使用 SQLite。包含以下表：
 
@@ -357,12 +377,22 @@ gold-trader-cli/
 │  │   ├─ evaluator.py       # 评估逻辑
 │  │   ├─ metrics.py         # 指标计算
 │  │   └─ reports.py         # 报表生成
+│  ├─ history/              # 历史数据（回测用）
+│  │   ├─ cache.py          # SQLite 缓存
+│  │   ├─ gold.py           # GoldHistoryStore (yfinance GC=F)
+│  │   └─ rates.py          # RatesHistoryStore (FRED API)
+│  ├─ backtest/            # 历史回测引擎
+│  │   ├─ models.py         # BacktestRun/Snapshot/Evaluation ORM
+│  │   ├─ engine.py         # BacktestEngine 核心
+│  │   └─ metrics.py        # 回测统计指标
 │  └─ utils/
 │      └─ time_utils.py      # 时间工具
 ├─ tests/                    # 测试套件
 ├─ config/
 │  └─ weights.yaml          # 默认策略权重
 ├─ logs/                     # 日志文件（运行时创建）
+├─ history_cache.db          # 历史数据缓存（回测专用）
+├─ gold_trader.db           # 主数据库（快照+评估）
 ├─ pyproject.toml
 ├─ .env.example
 └─ README.md
@@ -372,10 +402,13 @@ gold-trader-cli/
 
 ## 未来扩展方向
 
-- [ ] COT 持仓数据接入（CFTC，周更新）
-- [ ] 回测引擎（基于历史数据）
+- [x] 回测引擎（基于历史数据）— 已实现 `gold-cli backtest`
+- [ ] 策略阈值自动校准（自适应 LONG/SHORT_THRESHOLD）
+- [ ] 缩短止损/止盈距离（当前 ATR multiplier 过宽）
+- [ ] 接入历史新闻数据提升回测完整度
 - [ ] 多时间周期分析（15m、1h、4h、日线）
 - [ ] 多品种支持（白银、矿业股、外汇）
+- [ ] COT 持仓数据接入（CFTC，周更新）
 - [ ] 告警通知（Slack、邮件）
 - [ ] Web 控制台
 - [ ] 多 Agent 架构（宏观分析师、技术分析师、情绪分析师）

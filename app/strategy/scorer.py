@@ -24,12 +24,13 @@ class Scorer:
 
         # ── Factor 1: USD (DXY) — gold is negatively correlated with USD ─────────
         # DXY up → gold down (score negative), DXY down → gold up (score positive)
-        # dxy_change is in percent units (e.g. 0.192 for 0.192%); scale so ±0.5% → ±1.0
-        factor_usd = -fs.dxy_change / 50.0
+        # dxy_change is in percent units (e.g. 0.192 for 0.192%); scale so ±0.3% → ±0.222
+        # (matching 22.2% weight → ±0.222 max contribution, same scale as technical factor)
+        factor_usd = -fs.dxy_change / 1.35
 
         # ── Factor 2: Real rates — gold yields zero coupon, real rates up → gold down
-        # real_rate_proxy is in percent (e.g. 2.030 for 2.030%); scale so ±2% → ±1.0
-        factor_real_rate = -fs.real_rate_proxy / 200.0
+        # real_rate_proxy is in percent (e.g. 2.030 for 2.030%); scale so ±2% → ±0.222
+        factor_real_rate = -fs.real_rate_proxy / 9.0
 
         # ── Factor 3: Positioning / COT — extreme net positioning signals reversals
         # Long squeeze risk: very high net long → slightly negative signal

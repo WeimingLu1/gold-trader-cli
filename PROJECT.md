@@ -180,8 +180,16 @@ app/
 2. `config/weights.yaml` 权重调整
 3. `logs/` 日志文件增长
 4. 数据库 `gold_trader.db` 大小
+5. `app/strategy/rules.py` 中的 `LONG_THRESHOLD` 和 `SHORT_THRESHOLD` 校准
 
 ### 潜在风险
 - 新闻API频率限制
 - LLM API成本
 - 数据源中断导致特征不完整
+
+### 已完成的扩展
+- ✅ **历史回测系统** (`gold-cli backtest`)：用 yfinance 黄金期货 + FRED 数据回测规则策略
+  - 数据源：`history/` 模块（SQLite 缓存）
+  - 核心引擎：`backtest/engine.py`
+  - 评估指标：`backtest/metrics.py`
+  - 已知问题：策略阈值过于保守（见 CLAUDE.md 已知问题部分）

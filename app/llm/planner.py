@@ -72,13 +72,13 @@ class Planner:
 
         # ── Step 3: Generate stop / TP rules ────────────────────────────────────
         entry_price = features.xau_price
-        stop_pct = self.risk_manager.compute_stop_distance(features)
-        tp_pct = self.risk_manager.compute_take_profit_distance(features)
+        stop_pct = self.risk_manager.compute_stop_distance(features, horizon_hours)
+        tp_pct = self.risk_manager.compute_take_profit_distance(features, horizon_hours)
 
         stop_rule = self.risk_manager.generate_stop_rule(entry_price, stop_pct)
         tp_rule = self.risk_manager.generate_tp_rule(entry_price, tp_pct, stance)
 
-        expected_return_pct = self.rule_engine.determine_expected_return(stance, entry_price)
+        expected_return_pct = self.rule_engine.determine_expected_return(stance, entry_price, stop_pct, tp_pct)
 
         # ── Step 4: LLM provides the narrative "why" ─────────────────────────────
         why = await self._generate_narrative(
