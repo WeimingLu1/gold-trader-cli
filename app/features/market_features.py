@@ -58,9 +58,11 @@ def build_market_features(
     vol4 = calc_volatility(4)
     vol24 = calc_volatility(24)
 
+    # Threshold for trending: require meaningful 4h move
+    # In a +125%/month regime, small pullbacks (<0.8%) shouldn't trigger bearish
     if r4 > 0.005:
         trend = "bullish"
-    elif r4 < -0.005:
+    elif r4 < -0.010:   # require deeper pullback for bearish (was -0.005)
         trend = "bearish"
     else:
         trend = "neutral"

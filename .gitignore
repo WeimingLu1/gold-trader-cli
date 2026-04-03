@@ -19,3 +19,7 @@ logs/
 .idea/
 .vscode/
 *.swp
+
+# State caches
+.cot_cache.json
+.dxy_state.json

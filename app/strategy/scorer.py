@@ -50,8 +50,16 @@ class Scorer:
         factor_volatility = vol_signal
 
         # ── Factor 5: Technical — trend state from price momentum
+        # Require r4 + r24 confirm for strong signal; neutral trend reduces strength
         trend_map = {"bullish": 1.0, "neutral": 0.0, "bearish": -1.0}
-        factor_technical = trend_map.get(fs.trend_state, 0.0)
+        base_tech = trend_map.get(fs.trend_state, 0.0)
+        # Downgrade neutral trend signal; require r24 direction confirm for strong calls
+        if fs.trend_state == "neutral":
+            if fs.returns_24h > 0.003:      # 24h still up → downgrade bullish
+                base_tech = 0.2
+            elif fs.returns_24h < -0.003:  # 24h down → downgrade bearish
+                base_tech = -0.2
+        factor_technical = base_tech
 
         # ── Factor 6: News sentiment — NLP-derived score
         factor_news = fs.news_sentiment_score
